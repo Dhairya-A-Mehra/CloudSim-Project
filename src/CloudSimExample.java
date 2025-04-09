@@ -6,52 +6,38 @@ import org.cloudbus.cloudsim.core.CloudSim;
 import java.util.*;
 
 public class CloudSimExample {
+    private static final int INITIAL_VM_COUNT = 2;
+    private static final int CLOUDLET_COUNT = 10;
+    private static final int VM_THRESHOLD = 3;
+
     public static void main(String[] args) {
         try {
-            // Initialize the CloudSim library
             int numUsers = 1;
             Calendar calendar = Calendar.getInstance();
             boolean traceFlag = false;
 
             CloudSim.init(numUsers, calendar, traceFlag);
 
-            // Create Datacenter
             Datacenter datacenter0 = createDatacenter("Datacenter_0");
 
-            // Create Broker
             DatacenterBroker broker = new DatacenterBroker("Broker");
             int brokerId = broker.getId();
 
-            // Create VMs
-            List<Vm> vmlist = new ArrayList<>();
-            for (int i = 0; i < 2; i++) {
-                Vm vm = new Vm(i, brokerId, 1000, 1, 2048, 10000, 1000, "Xen", new CloudletSchedulerTimeShared());
-                vmlist.add(vm);
-            }
+            List<Vm> vmlist = createVms(brokerId, INITIAL_VM_COUNT);
             broker.submitVmList(vmlist);
 
-            // Create Cloudlets
-            List<Cloudlet> cloudletList = new ArrayList<>();
-            for (int i = 0; i < 5; i++) {
-                Cloudlet cloudlet = new Cloudlet(i, 40000, 1, 300, 300, new UtilizationModelFull(), new UtilizationModelFull(), new UtilizationModelFull());
-                cloudlet.setUserId(brokerId);
-                cloudlet.setVmId(vmlist.get(i % vmlist.size()).getId());
-                cloudletList.add(cloudlet);
-            }
+            List<Cloudlet> cloudletList = createCloudlets(brokerId, CLOUDLET_COUNT, vmlist);
             broker.submitCloudletList(cloudletList);
 
-            // Start simulation
             CloudSim.startSimulation();
 
             List<Cloudlet> newList = broker.getCloudletReceivedList();
+
+            printCloudletList(newList); 
+
             CloudSim.stopSimulation();
 
-            // Output
-            System.out.println("=== Output ===");
-            for (Cloudlet cloudlet : newList) {
-                System.out.println("Cloudlet ID: " + cloudlet.getCloudletId() + " Status: " + cloudlet.getStatus() +
-                        " VM ID: " + cloudlet.getVmId() + " Time: " + cloudlet.getActualCPUTime());
-            }
+            autoScaleIfNeeded(cloudletList, vmlist);
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -64,34 +50,81 @@ public class CloudSimExample {
         List<Pe> peList = new ArrayList<>();
         peList.add(new Pe(0, new PeProvisionerSimple(1000)));
 
-        int hostId = 0;
-        int ram = 8192;
-        long storage = 1000000;
-        int bw = 10000;
-
-        hostList.add(new Host(
-                hostId,
-                new RamProvisionerSimple(ram),
-                new BwProvisionerSimple(bw),
-                storage,
+        Host host = new Host(
+                0,
+                new RamProvisionerSimple(2048),
+                new BwProvisionerSimple(10000),
+                1000000,
                 peList,
                 new VmSchedulerTimeShared(peList)
-        ));
+        );
 
-        String arch = "x86";
-        String os = "Linux";
-        String vmm = "Xen";
-        double time_zone = 10.0;
-        double cost = 3.0;
-        double costPerMem = 0.05;
-        double costPerStorage = 0.001;
-        double costPerBw = 0.0;
+        hostList.add(host);
 
-        LinkedList<Storage> storageList = new LinkedList<>();
+        return new Datacenter(
+                name,
+                new DatacenterCharacteristics(
+                        "x86", "Linux", "Xen", hostList,
+                        10.0, 3.0, 0.05, 0.1, 0.1),
+                new VmAllocationPolicySimple(hostList),
+                new LinkedList<>(),
+                10
+        );
+    }
 
-        DatacenterCharacteristics characteristics = new DatacenterCharacteristics(
-                arch, os, vmm, hostList, time_zone, cost, costPerMem, costPerStorage, costPerBw);
+    private static List<Vm> createVms(int brokerId, int count) {
+        List<Vm> vmlist = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            Vm vm = new Vm(i, brokerId, 1000, 1, 2048, 1000, 10000, "Xen", new CloudletSchedulerTimeShared());
+            vmlist.add(vm);
+        }
+        return vmlist;
+    }
 
-        return new Datacenter(name, characteristics, new VmAllocationPolicySimple(hostList), storageList, 0);
+    private static List<Cloudlet> createCloudlets(int brokerId, int count, List<Vm> vmlist) {
+        List<Cloudlet> list = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            Cloudlet cloudlet = new Cloudlet(i, 40000, 1, 300, 300,
+                    new UtilizationModelFull(),
+                    new UtilizationModelFull(),
+                    new UtilizationModelFull());
+            cloudlet.setUserId(brokerId);
+            cloudlet.setVmId(vmlist.get(i % vmlist.size()).getId());
+            list.add(cloudlet);
+        }
+        return list;
+    }
+
+    private static void printCloudletList(List<Cloudlet> list) {
+        System.out.println("========== OUTPUT ==========");
+        System.out.println("Cloudlet ID\tSTATUS\t\tData center ID\tVM ID\tTime\tStart Time\tFinish Time");
+
+        for (Cloudlet cloudlet : list) {
+            System.out.print(cloudlet.getCloudletId() + "\t\t");
+
+            if (cloudlet.getStatus() == Cloudlet.SUCCESS) {
+                System.out.print("SUCCESS");
+
+                System.out.println("\t\t" +
+                        cloudlet.getResourceId() + "\t\t" +
+                        cloudlet.getVmId() + "\t\t" +
+                        cloudlet.getActualCPUTime() + "\t" +
+                        cloudlet.getExecStartTime() + "\t\t" +
+                        cloudlet.getFinishTime());
+            }
+        }
+    }
+
+    private static void autoScaleIfNeeded(List<Cloudlet> cloudletList, List<Vm> vmlist) {
+        int avgLoad = cloudletList.size() / vmlist.size();
+
+        System.out.println("\n========= AUTO-SCALING =========");
+        if (avgLoad > VM_THRESHOLD) {
+            System.out.println("⚠️  High average load per VM (" + avgLoad + "). Scaling out by adding 1 VM...");
+        } else if (avgLoad < (VM_THRESHOLD / 2)) {
+            System.out.println("ℹ️  Load is low (" + avgLoad + "). Consider scaling in...");
+        } else {
+            System.out.println("✅ Load is optimal. No scaling needed.");
+        }
     }
 }
